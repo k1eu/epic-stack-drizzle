@@ -24,9 +24,11 @@ import {
 	useSubmit,
 } from '@remix-run/react'
 import { withSentry } from '@sentry/remix'
+import { eq } from 'drizzle-orm'
 import { useRef } from 'react'
 import { HoneypotProvider } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
+import { users } from '#drizzle/schema.ts'
 import { GeneralErrorBoundary } from './components/error-boundary.tsx'
 import { EpicProgress } from './components/progress-bar.tsx'
 import { SearchBar } from './components/search-bar.tsx'
@@ -44,7 +46,7 @@ import { EpicToaster } from './components/ui/sonner.tsx'
 import tailwindStyleSheetUrl from './styles/tailwind.css?url'
 import { getUserId, logout } from './utils/auth.server.ts'
 import { ClientHintCheck, getHints, useHints } from './utils/client-hints.tsx'
-import { prisma } from './utils/db.server.ts'
+import { db } from './utils/db.server.ts'
 import { getEnv } from './utils/env.server.ts'
 import { honeypot } from './utils/honeypot.server.ts'
 import { combineHeaders, getDomainUrl, getUserImgSrc } from './utils/misc.tsx'
@@ -93,29 +95,45 @@ export async function loader({ request }: LoaderFunctionArgs) {
 		desc: 'getUserId in root',
 	})
 
-	const user = userId
-		? await time(
-				() =>
-					prisma.user.findUniqueOrThrow({
-						select: {
-							id: true,
+	console.log({ userId })
+
+	const user = await db.query.users.findFirst({
+		where: eq(users.id, userId),
+		with: {
+			image: true,
+			roles: {
+				with: {
+					role: {
+						columns: {
 							name: true,
-							username: true,
-							image: { select: { id: true } },
-							roles: {
-								select: {
-									name: true,
-									permissions: {
-										select: { entity: true, action: true, access: true },
+						},
+						with: {
+							permissions: {
+								with: {
+									permission: {
+										columns: {
+											entity: true,
+											action: true,
+											access: true,
+										},
 									},
 								},
 							},
 						},
-						where: { id: userId },
-					}),
-				{ timings, type: 'find user', desc: 'find user in root' },
-			)
-		: null
+					},
+				},
+			},
+		},
+	})
+
+	const parsedUser = {
+		...user,
+		roles: user?.roles.map(role => ({
+			...role.role,
+			permissions: role.role?.permissions.map(p => p.permission),
+		})),
+	}
+
 	if (userId && !user) {
 		console.info('something weird happened')
 		// something weird happened... The user is authenticated but we can't find
@@ -127,7 +145,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 	return json(
 		{
-			user,
+			user: parsedUser,
 			requestInfo: {
 				hints: getHints(request),
 				origin: getDomainUrl(request),
