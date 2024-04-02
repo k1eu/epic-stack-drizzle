@@ -1,0 +1,17 @@
+version: "3.9"
+services:
+  remix-db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: remixhjkl
+      POSTGRES_DB: remix
+    volumes:
+      - remix-db-data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+
+volumes:
+  remix-db-data:
+    driver: local
+
