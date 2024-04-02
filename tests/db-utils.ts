@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import { faker } from '@faker-js/faker'
-import { type PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { sql } from 'drizzle-orm'
 import { UniqueEnforcer } from 'enforce-unique'
+import { type ApplicationDatabase } from '#app/utils/db.server'
 
 const uniqueUsernameEnforcer = new UniqueEnforcer()
 
@@ -115,18 +116,20 @@ export async function img({
 	}
 }
 
-export async function cleanupDb(prisma: PrismaClient) {
-	const tables = await prisma.$queryRaw<
-		{ name: string }[]
-	>`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_prisma_migrations';`
+export async function cleanupDb(db: ApplicationDatabase) {
+	const query = sql<string>`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    AND table_type = 'BASE TABLE';
+  `
+	const tables = await db.execute(query)
 
-	await prisma.$transaction([
-		// Disable FK constraints to avoid relation conflicts during deletion
-		prisma.$executeRawUnsafe(`PRAGMA foreign_keys = OFF`),
-		// Delete all rows from each table, preserving table structures
-		...tables.map(({ name }) =>
-			prisma.$executeRawUnsafe(`DELETE from "${name}"`),
-		),
-		prisma.$executeRawUnsafe(`PRAGMA foreign_keys = ON`),
-	])
+	await Promise.all(
+		tables.map(async table => {
+			const query = sql.raw(`TRUNCATE TABLE ${table.table_name} CASCADE;`)
+			await db.execute(query)
+		}),
+	)
+
 }
