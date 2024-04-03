@@ -1,13 +1,15 @@
 import { invariant } from '@epic-web/invariant'
 import { redirect } from '@remix-run/node'
+import { and, eq } from 'drizzle-orm'
 import { safeRedirect } from 'remix-utils/safe-redirect'
 import { twoFAVerificationType } from '#app/routes/settings+/profile.two-factor.tsx'
 import { getUserId, sessionKey } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { combineResponseInits } from '#app/utils/misc.tsx'
 import { authSessionStorage } from '#app/utils/session.server.ts'
 import { redirectWithToast } from '#app/utils/toast.server.ts'
 import { verifySessionStorage } from '#app/utils/verification.server.ts'
+import { sessions, verifications } from '#drizzle/schema.ts'
 import { getRedirectToUrl, type VerifyFunctionArgs } from './verify.server.ts'
 
 const verifiedTimeKey = 'verified-time'
@@ -28,12 +30,16 @@ export async function handleNewSession(
 	},
 	responseInit?: ResponseInit,
 ) {
-	const verification = await prisma.verification.findUnique({
-		select: { id: true },
-		where: {
-			target_type: { target: session.userId, type: twoFAVerificationType },
+	const verification = await db.query.verifications.findFirst({
+		where: and(
+			eq(verifications.target, session.userId),
+			eq(verifications.type, twoFAVerificationType),
+		),
+		columns: {
+			id: true,
 		},
 	})
+
 	const userHasTwoFactor = Boolean(verification)
 
 	if (userHasTwoFactor) {
@@ -102,9 +108,11 @@ export async function handleVerification({
 
 	const unverifiedSessionId = verifySession.get(unverifiedSessionIdKey)
 	if (unverifiedSessionId) {
-		const session = await prisma.session.findUnique({
-			select: { expirationDate: true },
-			where: { id: unverifiedSessionId },
+		const session = await db.query.sessions.findFirst({
+			where: and(eq(sessions.id, unverifiedSessionId)),
+			columns: {
+				expirationDate: true,
+			},
 		})
 		if (!session) {
 			throw await redirectWithToast('/login', {
@@ -118,7 +126,7 @@ export async function handleVerification({
 		headers.append(
 			'set-cookie',
 			await authSessionStorage.commitSession(authSession, {
-				expires: remember ? session.expirationDate : undefined,
+				expires: remember ? new Date(session.expirationDate) : undefined,
 			}),
 		)
 	} else {
@@ -147,9 +155,14 @@ export async function shouldRequestTwoFA(request: Request) {
 	const userId = await getUserId(request)
 	if (!userId) return false
 	// if it's over two hours since they last verified, we should request 2FA again
-	const userHasTwoFA = await prisma.verification.findUnique({
-		select: { id: true },
-		where: { target_type: { target: userId, type: twoFAVerificationType } },
+	const userHasTwoFA = await db.query.verifications.findFirst({
+		where: and(
+			eq(verifications.target, userId),
+			eq(verifications.type, twoFAVerificationType),
+		),
+		columns: {
+			id: true,
+		},
 	})
 	if (!userHasTwoFA) return false
 	const verifiedTime = authSession.get(verifiedTimeKey) ?? new Date(0)

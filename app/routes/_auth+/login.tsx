@@ -58,6 +58,8 @@ export async function action({ request }: ActionFunctionArgs) {
 		async: true,
 	})
 
+	console.log({ submission })
+
 	if (submission.status !== 'success' || !submission.value.session) {
 		return json(
 			{ result: submission.reply({ hideFields: ['password'] }) },
@@ -69,7 +71,10 @@ export async function action({ request }: ActionFunctionArgs) {
 
 	return handleNewSession({
 		request,
-		session,
+		session: {
+			...session,
+			expirationDate: new Date(session.expirationDate),
+		},
 		remember: remember ?? false,
 		redirectTo,
 	})
