@@ -1,15 +1,17 @@
 import { type Submission } from '@conform-to/react'
 import { parseWithZod } from '@conform-to/zod'
 import { json } from '@remix-run/node'
+import { and, eq, gt, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { handleVerification as handleChangeEmailVerification } from '#app/routes/settings+/profile.change-email.server.tsx'
 import { twoFAVerificationType } from '#app/routes/settings+/profile.two-factor.tsx'
 import { requireUserId } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { ensurePrimary } from '#app/utils/litefs.server.ts'
 import { getDomainUrl } from '#app/utils/misc.tsx'
 import { redirectWithToast } from '#app/utils/toast.server.ts'
 import { generateTOTP, verifyTOTP } from '#app/utils/totp.server.ts'
+import { verifications } from '#drizzle/schema.ts'
 import { type twoFAVerifyVerificationType } from '../settings+/profile.two-factor.verify.tsx'
 import {
 	handleVerification as handleLoginTwoFactorVerification,
@@ -100,11 +102,20 @@ export async function prepareVerification({
 		...verificationConfig,
 		expiresAt: new Date(Date.now() + verificationConfig.period * 1000),
 	}
-	await prisma.verification.upsert({
-		where: { target_type: { target, type } },
-		create: verificationData,
-		update: verificationData,
-	})
+
+	await db
+		.insert(verifications)
+		.values({
+			...verificationData,
+			expiresAt: verificationData.expiresAt.toISOString(),
+		})
+		.onConflictDoUpdate({
+			target: [verifications.target, verifications.type],
+			set: {
+				...verificationData,
+				expiresAt: verificationData.expiresAt.toISOString(),
+			},
+		})
 
 	// add the otp to the url we'll email the user.
 	verifyUrl.searchParams.set(codeQueryParam, otp)
@@ -121,13 +132,13 @@ export async function isCodeValid({
 	type: VerificationTypes | typeof twoFAVerifyVerificationType
 	target: string
 }) {
-	const verification = await prisma.verification.findUnique({
-		where: {
-			target_type: { target, type },
-			OR: [{ expiresAt: { gt: new Date() } }, { expiresAt: null }],
-		},
-		select: { algorithm: true, secret: true, period: true, charSet: true },
+	const verification = await db.query.verifications.findFirst({
+		where: or(
+			and(eq(verifications.target, target), eq(verifications.type, type)),
+			gt(sql`now()`, verifications.expiresAt),
+		),
 	})
+
 	if (!verification) return false
 	const result = verifyTOTP({
 		otp: code,
@@ -175,14 +186,14 @@ export async function validateRequest(
 	const { value: submissionValue } = submission
 
 	async function deleteVerification() {
-		await prisma.verification.delete({
-			where: {
-				target_type: {
-					type: submissionValue[typeQueryParam],
-					target: submissionValue[targetQueryParam],
-				},
-			},
-		})
+		await db
+			.delete(verifications)
+			.where(
+				and(
+					eq(verifications.target, submissionValue[targetQueryParam]),
+					eq(verifications.type, submissionValue[typeQueryParam]),
+				),
+			)
 	}
 
 	switch (submissionValue[typeQueryParam]) {

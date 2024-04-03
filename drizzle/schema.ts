@@ -1,6 +1,6 @@
 import { createId } from '@paralleldrive/cuid2'
 import { relations, sql } from 'drizzle-orm'
-import { text, integer, pgTable, timestamp } from 'drizzle-orm/pg-core'
+import { text, integer, pgTable, timestamp, unique } from 'drizzle-orm/pg-core'
 
 const createdAt = {
 	createdAt: timestamp('created_at', {
@@ -116,11 +116,16 @@ export const sessions = pgTable('sessions', {
 
 	userId: text('user_id')
 		.notNull()
-		.references(() => users.id),
+		.references(() => users.id, {
+			onDelete: 'cascade',
+		}),
 })
 
 export const sessionRelations = relations(sessions, ({ one }) => ({
-	user: one(users),
+	user: one(users, {
+		fields: [sessions.userId],
+		references: [users.id],
+	}),
 }))
 
 export const permissions = pgTable('permissions', {
@@ -199,24 +204,31 @@ export const userRolesRelations = relations(userRoles, ({ one }) => ({
 	}),
 }))
 
-export const verifications = pgTable('verifications', {
-	id: text('id')
-		.primaryKey()
-		.$defaultFn(() => createId()),
-	...createdAt,
+export const verifications = pgTable(
+	'verifications',
+	{
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => createId()),
+		...createdAt,
 
-	type: text('type').notNull(),
-	secret: text('secret').notNull(),
-	algorithm: text('algorithm').notNull(),
-	digits: integer('digits').notNull(),
-	period: integer('period').notNull(),
-	charSet: text('char_set').notNull(),
-	expiresAt: timestamp('expires_at', {
-		withTimezone: true,
-		precision: 3,
-		mode: 'string',
+		type: text('type').notNull(),
+		target: text('target').notNull(),
+		secret: text('secret').notNull(),
+		algorithm: text('algorithm').notNull(),
+		digits: integer('digits').notNull(),
+		period: integer('period').notNull(),
+		charSet: text('char_set').notNull(),
+		expiresAt: timestamp('expires_at', {
+			withTimezone: true,
+			precision: 3,
+			mode: 'string',
+		}),
+	},
+	t => ({
+		uniqueVerification: unique('unique_answer').on(t.target, t.type),
 	}),
-})
+)
 
 export const connections = pgTable('connections', {
 	id: text('id')
