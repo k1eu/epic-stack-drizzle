@@ -8,15 +8,17 @@ import {
 	type MetaFunction,
 } from '@remix-run/node'
 import { Link, useFetcher } from '@remix-run/react'
+import { eq, or } from 'drizzle-orm'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
 import { ErrorList, Field } from '#app/components/forms.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { sendEmail } from '#app/utils/email.server.ts'
 import { checkHoneypot } from '#app/utils/honeypot.server.ts'
 import { EmailSchema, UsernameSchema } from '#app/utils/user-validation.ts'
+import { users } from '#drizzle/schema.js'
 import { prepareVerification } from './verify.server.ts'
 
 const ForgotPasswordSchema = z.object({
@@ -28,14 +30,14 @@ export async function action({ request }: ActionFunctionArgs) {
 	checkHoneypot(formData)
 	const submission = await parseWithZod(formData, {
 		schema: ForgotPasswordSchema.superRefine(async (data, ctx) => {
-			const user = await prisma.user.findFirst({
-				where: {
-					OR: [
-						{ email: data.usernameOrEmail },
-						{ username: data.usernameOrEmail },
-					],
+			const user = await db.query.users.findFirst({
+				where: or(
+					eq(users.email, data.usernameOrEmail),
+					eq(users.username, data.usernameOrEmail),
+				),
+				columns: {
+					id: true,
 				},
-				select: { id: true },
 			})
 			if (!user) {
 				ctx.addIssue({
@@ -56,10 +58,20 @@ export async function action({ request }: ActionFunctionArgs) {
 	}
 	const { usernameOrEmail } = submission.value
 
-	const user = await prisma.user.findFirstOrThrow({
-		where: { OR: [{ email: usernameOrEmail }, { username: usernameOrEmail }] },
-		select: { email: true, username: true },
+	const user = await db.query.users.findFirst({
+		where: or(
+			eq(users.email, usernameOrEmail),
+			eq(users.username, usernameOrEmail),
+		),
+		columns: {
+			email: true,
+			username: true,
+		},
 	})
+
+	if (!user) {
+		throw new Error('User not found')
+	}
 
 	const { verifyUrl, redirectTo, otp } = await prepareVerification({
 		period: 10 * 60,

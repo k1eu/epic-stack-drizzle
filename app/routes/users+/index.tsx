@@ -1,17 +1,18 @@
 import { json, redirect, type LoaderFunctionArgs } from '@remix-run/node'
 import { Link, useLoaderData } from '@remix-run/react'
+import { sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
 import { ErrorList } from '#app/components/forms.tsx'
 import { SearchBar } from '#app/components/search-bar.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { cn, getUserImgSrc, useDelayedIsPending } from '#app/utils/misc.tsx'
 
 const UserSearchResultSchema = z.object({
 	id: z.string(),
 	username: z.string(),
 	name: z.string().nullable(),
-	imageId: z.string().nullable(),
+	imageid: z.string().nullable(),
 })
 
 const UserSearchResultsSchema = z.array(UserSearchResultSchema)
@@ -23,23 +24,26 @@ export async function loader({ request }: LoaderFunctionArgs) {
 	}
 
 	const like = `%${searchTerm ?? ''}%`
-	const rawUsers = await prisma.$queryRaw`
-		SELECT User.id, User.username, User.name, UserImage.id AS imageId
-		FROM User
-		LEFT JOIN UserImage ON User.id = UserImage.userId
-		WHERE User.username LIKE ${like}
-		OR User.name LIKE ${like}
+	const rawUsers = await db.execute(sql`
+		SELECT users.id, users.username, users.name, user_images.id AS imageId
+		FROM users
+		LEFT JOIN user_images ON users.id = user_images.user_id
+		WHERE users.username LIKE ${like}
+		OR users.name LIKE ${like}
 		ORDER BY (
-			SELECT Note.updatedAt
-			FROM Note
-			WHERE Note.ownerId = User.id
-			ORDER BY Note.updatedAt DESC
+			SELECT notes.updated_at
+			FROM notes
+			WHERE notes.owner_id = users.id
+			ORDER BY notes.updated_at DESC
 			LIMIT 1
 		) DESC
 		LIMIT 50
-	`
+	`)
+
+	console.log({ rawUsers })
 
 	const result = UserSearchResultsSchema.safeParse(rawUsers)
+
 	if (!result.success) {
 		return json({ status: 'error', error: result.error.message } as const, {
 			status: 400,
@@ -82,7 +86,7 @@ export default function UsersRoute() {
 									>
 										<img
 											alt={user.name ?? user.username}
-											src={getUserImgSrc(user.imageId)}
+											src={getUserImgSrc(user.imageid)}
 											className="h-16 w-16 rounded-full"
 										/>
 										{user.name ? (

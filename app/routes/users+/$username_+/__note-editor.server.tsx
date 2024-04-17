@@ -1,5 +1,6 @@
+// import { Blob } from 'buffer'
 import { parseWithZod } from '@conform-to/zod'
-import { createId as cuid } from '@paralleldrive/cuid2'
+// import { createId as cuid } from '@paralleldrive/cuid2'
 import {
 	unstable_createMemoryUploadHandler as createMemoryUploadHandler,
 	json,
@@ -7,9 +8,11 @@ import {
 	redirect,
 	type ActionFunctionArgs,
 } from '@remix-run/node'
+import { and, eq, notInArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireUserId } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
+import { notes, userImages } from '#drizzle/schema.js'
 import {
 	MAX_UPLOAD_SIZE,
 	NoteEditorSchema,
@@ -40,9 +43,11 @@ export async function action({ request }: ActionFunctionArgs) {
 		schema: NoteEditorSchema.superRefine(async (data, ctx) => {
 			if (!data.id) return
 
-			const note = await prisma.note.findUnique({
-				select: { id: true },
-				where: { id: data.id, ownerId: userId },
+			const note = await db.query.notes.findFirst({
+				where: and(eq(notes.id, data.id), eq(notes.ownerId, userId)),
+				columns: {
+					id: true,
+				},
 			})
 			if (!note) {
 				ctx.addIssue({
@@ -99,31 +104,91 @@ export async function action({ request }: ActionFunctionArgs) {
 		title,
 		content,
 		imageUpdates = [],
-		newImages = [],
+		// newImages = [],
 	} = submission.value
 
-	const updatedNote = await prisma.note.upsert({
-		select: { id: true, owner: { select: { username: true } } },
-		where: { id: noteId ?? '__new_note__' },
-		create: {
+	// const updatedNote = await prisma.note.upsert({
+	// 	select: { id: true, owner: { select: { username: true } } },
+	// 	where: { id: noteId ?? '__new_note__' },
+	// 	create: {
+	// 		ownerId: userId,
+	// 		title,
+	// 		content,
+	// 		images: { create: newImages },
+	// 	},
+	// 	update: {
+	// 		title,
+	// 		content,
+	// 		images: {
+	// 			deleteMany: { id: { notIn: imageUpdates.map(i => i.id) } },
+	// 			updateMany: imageUpdates.map(updates => ({
+	// 				where: { id: updates.id },
+	// 				data: { ...updates, id: updates.blob ? cuid() : updates.id },
+	// 			})),
+	// 			create: newImages,
+	// 		},
+	// 	},
+	// })
+
+	await db.delete(userImages).where(
+		notInArray(
+			userImages.id,
+			imageUpdates.map(i => i.id),
+		),
+	)
+
+	// TODO: Insert
+	// TODO: update image
+
+	await Promise.all(
+		imageUpdates.map(async image => {
+			if (image.blob) {
+				await db.update(userImages).set({
+					id: image.id,
+					altText: image.altText,
+					contentType: image.contentType,
+				})
+			}
+		}),
+	)
+
+	const [updatedNote2] = await db
+		.insert(notes)
+		.values({
+			id: noteId ?? undefined,
 			ownerId: userId,
 			title,
 			content,
-			images: { create: newImages },
-		},
-		update: {
-			title,
-			content,
-			images: {
-				deleteMany: { id: { notIn: imageUpdates.map(i => i.id) } },
-				updateMany: imageUpdates.map(updates => ({
-					where: { id: updates.id },
-					data: { ...updates, id: updates.blob ? cuid() : updates.id },
-				})),
-				create: newImages,
+		})
+		.onConflictDoUpdate({
+			target: notes.id,
+			set: {
+				title,
+				content,
+			},
+		})
+		.returning({
+			id: notes.id,
+		})
+
+	const updatedNote = await db.query.notes.findFirst({
+		where: eq(notes.id, updatedNote2.id),
+		with: {
+			owner: {
+				columns: {
+					username: true,
+				},
 			},
 		},
 	})
+
+	if (!updatedNote) {
+		throw new Error('Note not found')
+	}
+
+	if (!updatedNote.owner?.username) {
+		throw new Error('Owner not found')
+	}
 
 	return redirect(
 		`/users/${updatedNote.owner.username}/notes/${updatedNote.id}`,

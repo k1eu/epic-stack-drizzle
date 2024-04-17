@@ -54,14 +54,19 @@ export const notes = pgTable('notes', {
 	title: text('title').notNull(),
 	content: text('content').notNull(),
 
-	ownerId: text('owner_id').references(() => users.id),
+	ownerId: text('owner_id')
+		.references(() => users.id)
+		.notNull(),
 
 	...createdAt,
 	...updatedAt,
 })
 
 export const noteRelations = relations(notes, ({ one, many }) => ({
-	owner: one(users),
+	owner: one(users, {
+		fields: [notes.ownerId],
+		references: [users.id],
+	}),
 	images: many(noteImages),
 }))
 
@@ -80,6 +85,13 @@ export const noteImages = pgTable('note_images', {
 		.notNull()
 		.references(() => notes.id),
 })
+
+export const noteImageRelations = relations(noteImages, ({ one }) => ({
+	note: one(notes, {
+		fields: [noteImages.noteId],
+		references: [notes.id],
+	}),
+}))
 
 export const userImages = pgTable('user_images', {
 	id: text('id')
@@ -246,5 +258,8 @@ export const connections = pgTable('connections', {
 })
 
 export const connectionRelations = relations(connections, ({ one }) => ({
-	user: one(users),
+	user: one(users, {
+		fields: [connections.userId],
+		references: [users.id],
+	}),
 }))

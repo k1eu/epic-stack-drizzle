@@ -1,11 +1,12 @@
 import { redirect, type LoaderFunctionArgs } from '@remix-run/node'
+import { and, eq } from 'drizzle-orm'
 import {
 	authenticator,
 	getSessionExpirationDate,
 	getUserId,
 } from '#app/utils/auth.server.ts'
 import { ProviderNameSchema, providerLabels } from '#app/utils/connections.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { combineHeaders } from '#app/utils/misc.tsx'
 import {
 	destroyRedirectToHeader,
@@ -16,6 +17,7 @@ import {
 	redirectWithToast,
 } from '#app/utils/toast.server.ts'
 import { verifySessionStorage } from '#app/utils/verification.server.ts'
+import { connections, sessions, users } from '#drizzle/schema.js'
 import { handleNewSession } from './login.server.ts'
 import { onboardingEmailSessionKey } from './onboarding.tsx'
 import { prefilledProfileKey, providerIdKey } from './onboarding_.$provider.tsx'
@@ -49,11 +51,11 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
 	const { data: profile } = authResult
 
-	const existingConnection = await prisma.connection.findUnique({
-		select: { userId: true },
-		where: {
-			providerName_providerId: { providerName, providerId: profile.id },
-		},
+	const existingConnection = await db.query.connections.findFirst({
+		where: and(
+			eq(connections.providerName, providerName),
+			eq(connections.providerId, profile.id),
+		),
 	})
 
 	const userId = await getUserId(request)
@@ -82,12 +84,10 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
 	// If we're already logged in, then link the account
 	if (userId) {
-		await prisma.connection.create({
-			data: {
-				providerName,
-				providerId: profile.id,
-				userId,
-			},
+		await db.insert(connections).values({
+			providerName,
+			providerId: profile.id,
+			userId,
 		})
 		return redirectWithToast(
 			'/settings/profile/connections',
@@ -107,17 +107,18 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
 	// if the email matches a user in the db, then link the account and
 	// make a new session
-	const user = await prisma.user.findUnique({
-		select: { id: true },
-		where: { email: profile.email.toLowerCase() },
+	const user = await db.query.users.findFirst({
+		where: eq(users.email, profile.email.toLowerCase()),
+		columns: {
+			id: true,
+		},
 	})
+
 	if (user) {
-		await prisma.connection.create({
-			data: {
-				providerName,
-				providerId: profile.id,
-				userId: user.id,
-			},
+		await db.insert(connections).values({
+			providerName,
+			providerId: profile.id,
+			userId: user.id,
 		})
 		return makeSession(
 			{ request, userId: user.id },
@@ -162,15 +163,25 @@ async function makeSession(
 	responseInit?: ResponseInit,
 ) {
 	redirectTo ??= '/'
-	const session = await prisma.session.create({
-		select: { id: true, expirationDate: true, userId: true },
-		data: {
-			expirationDate: getSessionExpirationDate(),
+	const [session] = await db
+		.insert(sessions)
+		.values({
 			userId,
-		},
-	})
+			expirationDate: getSessionExpirationDate().toISOString(),
+		})
+		.returning({
+			id: sessions.id,
+			userId: sessions.userId,
+			expirationDate: sessions.expirationDate,
+		})
+
+	const sessionParsed = {
+		...session,
+		expirationDate: new Date(session.expirationDate),
+	}
+
 	return handleNewSession(
-		{ request, session, redirectTo, remember: true },
+		{ request, session: sessionParsed, redirectTo, remember: true },
 		{ headers: combineHeaders(responseInit?.headers, destroyRedirectTo) },
 	)
 }

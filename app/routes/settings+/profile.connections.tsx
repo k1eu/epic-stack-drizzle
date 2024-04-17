@@ -8,6 +8,7 @@ import {
 	type HeadersFunction,
 } from '@remix-run/node'
 import { useFetcher, useLoaderData } from '@remix-run/react'
+import { and, eq } from 'drizzle-orm'
 import { useState } from 'react'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
@@ -26,9 +27,10 @@ import {
 	providerIcons,
 	providerNames,
 } from '#app/utils/connections.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { makeTimings } from '#app/utils/timing.server.ts'
 import { createToastHeaders } from '#app/utils/toast.server.ts'
+import { users, connections as connectionsTable } from '#drizzle/schema.js'
 import { type BreadcrumbHandle } from './profile.tsx'
 
 export const handle: BreadcrumbHandle & SEOHandle = {
@@ -37,26 +39,37 @@ export const handle: BreadcrumbHandle & SEOHandle = {
 }
 
 async function userCanDeleteConnections(userId: string) {
-	const user = await prisma.user.findUnique({
-		select: {
-			password: { select: { userId: true } },
-			_count: { select: { connections: true } },
+	const user = await db.query.users.findFirst({
+		where: eq(users.id, userId),
+		with: {
+			password: {
+				columns: {
+					userId: true,
+				},
+			},
+			connections: true,
 		},
-		where: { id: userId },
 	})
 	// user can delete their connections if they have a password
 	if (user?.password) return true
 	// users have to have more than one remaining connection to delete one
-	return Boolean(user?._count.connections && user?._count.connections > 1)
+	return Boolean(user?.connections && user?.connections.length > 1)
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
 	const userId = await requireUserId(request)
 	const timings = makeTimings('profile connections loader')
-	const rawConnections = await prisma.connection.findMany({
-		select: { id: true, providerName: true, providerId: true, createdAt: true },
-		where: { userId },
+
+	const rawConnections = await db.query.connections.findMany({
+		where: eq(connectionsTable.userId, userId),
+		columns: {
+			id: true,
+			providerName: true,
+			providerId: true,
+			createdAt: true,
+		},
 	})
+
 	const connections: Array<{
 		providerName: ProviderName
 		id: string
@@ -110,12 +123,15 @@ export async function action({ request }: ActionFunctionArgs) {
 	)
 	const connectionId = formData.get('connectionId')
 	invariantResponse(typeof connectionId === 'string', 'Invalid connectionId')
-	await prisma.connection.delete({
-		where: {
-			id: connectionId,
-			userId: userId,
-		},
-	})
+
+	await db
+		.delete(connectionsTable)
+		.where(
+			and(
+				eq(connectionsTable.id, connectionId),
+				eq(connectionsTable.userId, userId),
+			),
+		)
 	const toastHeaders = await createToastHeaders({
 		title: 'Deleted',
 		description: 'Your connection has been deleted.',

@@ -8,17 +8,19 @@ import {
 	type ActionFunctionArgs,
 } from '@remix-run/node'
 import { Link, useFetcher, useLoaderData } from '@remix-run/react'
+import { and, eq, gt, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import { ErrorList, Field } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { requireUserId, sessionKey } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { getUserImgSrc, useDoubleCheck } from '#app/utils/misc.tsx'
 import { authSessionStorage } from '#app/utils/session.server.ts'
 import { redirectWithToast } from '#app/utils/toast.server.ts'
 import { NameSchema, UsernameSchema } from '#app/utils/user-validation.ts'
+import { passwords, sessions, users, verifications } from '#drizzle/schema.js'
 import { twoFAVerificationType } from './profile.two-factor.tsx'
 
 export const handle: SEOHandle = {
@@ -32,36 +34,50 @@ const ProfileFormSchema = z.object({
 
 export async function loader({ request }: LoaderFunctionArgs) {
 	const userId = await requireUserId(request)
-	const user = await prisma.user.findUniqueOrThrow({
-		where: { id: userId },
-		select: {
+
+	const userWithDrizzle = await db.query.users.findFirst({
+		where: eq(users.id, userId),
+		columns: {
 			id: true,
 			name: true,
 			username: true,
 			email: true,
+		},
+		with: {
 			image: {
-				select: { id: true },
-			},
-			_count: {
-				select: {
-					sessions: {
-						where: {
-							expirationDate: { gt: new Date() },
-						},
-					},
+				columns: {
+					id: true,
 				},
+			},
+			sessions: {
+				where: gt(sessions.expirationDate, new Date().toISOString()),
 			},
 		},
 	})
 
-	const twoFactorVerification = await prisma.verification.findUnique({
-		select: { id: true },
-		where: { target_type: { type: twoFAVerificationType, target: userId } },
+	const user = {
+		...userWithDrizzle,
+		_count: {
+			sessions: userWithDrizzle?.sessions.length ?? 0,
+			// sessions: 0,
+		},
+	}
+
+	const twoFactorVerification = await db.query.verifications.findFirst({
+		where: and(
+			eq(verifications.type, twoFAVerificationType),
+			eq(verifications.target, userId),
+		),
+		columns: {
+			id: true,
+		},
 	})
 
-	const password = await prisma.password.findUnique({
-		select: { userId: true },
-		where: { userId },
+	const password = await db.query.passwords.findFirst({
+		where: eq(passwords.userId, userId),
+		columns: {
+			userId: true,
+		},
 	})
 
 	return json({
@@ -180,9 +196,11 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 	const submission = await parseWithZod(formData, {
 		async: true,
 		schema: ProfileFormSchema.superRefine(async ({ username }, ctx) => {
-			const existingUsername = await prisma.user.findUnique({
-				where: { username },
-				select: { id: true },
+			const existingUsername = await db.query.users.findFirst({
+				where: eq(users.username, username),
+				columns: {
+					id: true,
+				},
 			})
 			if (existingUsername && existingUsername.id !== userId) {
 				ctx.addIssue({
@@ -202,14 +220,16 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 
 	const data = submission.value
 
-	await prisma.user.update({
-		select: { username: true },
-		where: { id: userId },
-		data: {
-			name: data.name,
+	await db
+		.update(users)
+		.set({
 			username: data.username,
-		},
-	})
+			name: data.name,
+		})
+		.where(eq(users.id, userId))
+		.returning({
+			username: users.username,
+		})
 
 	return json({
 		result: submission.reply(),
@@ -280,12 +300,10 @@ async function signOutOfSessionsAction({ request, userId }: ProfileActionArgs) {
 		sessionId,
 		'You must be authenticated to sign out of other sessions',
 	)
-	await prisma.session.deleteMany({
-		where: {
-			userId,
-			id: { not: sessionId },
-		},
-	})
+
+	await db
+		.delete(sessions)
+		.where(and(eq(sessions.userId, userId), ne(sessions.id, sessionId)))
 	return json({ status: 'success' } as const)
 }
 
@@ -327,7 +345,7 @@ function SignOutOfSessions() {
 }
 
 async function deleteDataAction({ userId }: ProfileActionArgs) {
-	await prisma.user.delete({ where: { id: userId } })
+	await db.delete(users).where(eq(users.id, userId))
 	return redirectWithToast('/', {
 		type: 'success',
 		title: 'Data Deleted',

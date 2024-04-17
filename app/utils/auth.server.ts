@@ -234,10 +234,16 @@ export async function signupWithConnection({
 		providerName,
 	})
 
-	const session = await db.insert(sessions).values({
-		expirationDate: getSessionExpirationDate().toISOString(),
-		userId: user.id,
-	})
+	const [session] = await db
+		.insert(sessions)
+		.values({
+			expirationDate: getSessionExpirationDate().toISOString(),
+			userId: user.id,
+		})
+		.returning({
+			id: sessions.id,
+			expirationDate: sessions.expirationDate,
+		})
 
 	return session
 }
