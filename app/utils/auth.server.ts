@@ -1,10 +1,19 @@
 import { type Connection, type Password, type User } from '@prisma/client'
 import { redirect } from '@remix-run/node'
 import bcrypt from 'bcryptjs'
+import { and, eq, gt, sql } from 'drizzle-orm'
 import { Authenticator } from 'remix-auth'
 import { safeRedirect } from 'remix-utils/safe-redirect'
+import {
+	connections,
+	passwords,
+	roles,
+	sessions,
+	userRoles,
+	users,
+} from '#drizzle/schema.ts'
 import { connectionSessionStorage, providers } from './connections.server.ts'
-import { prisma } from './db.server.ts'
+import { db } from './db.server.ts'
 import { combineHeaders, downloadFile } from './misc.tsx'
 import { type ProviderUser } from './providers/provider.ts'
 import { authSessionStorage } from './session.server.ts'
@@ -29,10 +38,16 @@ export async function getUserId(request: Request) {
 	)
 	const sessionId = authSession.get(sessionKey)
 	if (!sessionId) return null
-	const session = await prisma.session.findUnique({
-		select: { user: { select: { id: true } } },
-		where: { id: sessionId, expirationDate: { gt: new Date() } },
+	const session = await db.query.sessions.findFirst({
+		where: and(
+			eq(sessions.id, sessionId),
+			gt(sessions.expirationDate, sql`now()`),
+		),
+		with: {
+			user: true,
+		},
 	})
+
 	if (!session?.user) {
 		throw redirect('/', {
 			headers: {
@@ -40,6 +55,7 @@ export async function getUserId(request: Request) {
 			},
 		})
 	}
+
 	return session.user.id
 }
 
@@ -79,13 +95,19 @@ export async function login({
 }) {
 	const user = await verifyUserPassword({ username }, password)
 	if (!user) return null
-	const session = await prisma.session.create({
-		select: { id: true, expirationDate: true, userId: true },
-		data: {
-			expirationDate: getSessionExpirationDate(),
+
+	const [session] = await db
+		.insert(sessions)
+		.values({
+			expirationDate: getSessionExpirationDate().toISOString(),
 			userId: user.id,
-		},
-	})
+		})
+		.returning({
+			id: sessions.id,
+			expirationDate: sessions.expirationDate,
+			userId: sessions.userId,
+		})
+
 	return session
 }
 
@@ -97,16 +119,18 @@ export async function resetUserPassword({
 	password: string
 }) {
 	const hashedPassword = await getPasswordHash(password)
-	return prisma.user.update({
-		where: { username },
-		data: {
-			password: {
-				update: {
-					hash: hashedPassword,
-				},
-			},
-		},
-	})
+	const [user] = await db
+		.select({
+			id: users.id,
+		})
+		.from(users)
+		.where(eq(users.username, username))
+	return db
+		.update(passwords)
+		.set({
+			hash: hashedPassword,
+		})
+		.where(eq(passwords.userId, user.id))
 }
 
 export async function signup({
@@ -122,27 +146,47 @@ export async function signup({
 }) {
 	const hashedPassword = await getPasswordHash(password)
 
-	const session = await prisma.session.create({
-		data: {
-			expirationDate: getSessionExpirationDate(),
-			user: {
-				create: {
-					email: email.toLowerCase(),
-					username: username.toLowerCase(),
-					name,
-					roles: { connect: { name: 'user' } },
-					password: {
-						create: {
-							hash: hashedPassword,
-						},
-					},
-				},
-			},
-		},
-		select: { id: true, expirationDate: true },
+	const [user] = await db
+		.insert(users)
+		.values({
+			email,
+			username,
+			name,
+		})
+		.returning({
+			id: users.id,
+		})
+
+	await db.insert(passwords).values({
+		userId: user.id,
+		hash: hashedPassword,
 	})
 
-	return session
+	const [newSession] = await db
+		.insert(sessions)
+		.values({
+			expirationDate: getSessionExpirationDate().toISOString(),
+			userId: user.id,
+		})
+		.returning({
+			id: sessions.id,
+			expirationDate: sessions.expirationDate,
+		})
+
+	const userRole = await db.query.roles.findFirst({
+		where: eq(roles.name, 'user'),
+	})
+
+	if (!userRole) {
+		throw new Error('User role not found')
+	}
+
+	await db.insert(userRoles).values({
+		userId: user.id,
+		roleId: userRole.id,
+	})
+
+	return newSession
 }
 
 export async function signupWithConnection({
@@ -160,24 +204,46 @@ export async function signupWithConnection({
 	providerName: Connection['providerName']
 	imageUrl?: string
 }) {
-	const session = await prisma.session.create({
-		data: {
-			expirationDate: getSessionExpirationDate(),
-			user: {
-				create: {
-					email: email.toLowerCase(),
-					username: username.toLowerCase(),
-					name,
-					roles: { connect: { name: 'user' } },
-					connections: { create: { providerId, providerName } },
-					image: imageUrl
-						? { create: await downloadFile(imageUrl) }
-						: undefined,
-				},
-			},
-		},
-		select: { id: true, expirationDate: true },
+	const [user] = await db
+		.insert(users)
+		.values({
+			email,
+			username,
+			name,
+		})
+		.returning({
+			id: users.id,
+		})
+
+	const userRole = await db.query.roles.findFirst({
+		where: eq(roles.name, 'user'),
 	})
+
+	if (!userRole) {
+		throw new Error('User role not found')
+	}
+
+	await db.insert(userRoles).values({
+		userId: user.id,
+		roleId: userRole.id,
+	})
+
+	await db.insert(connections).values({
+		userId: user.id,
+		providerId,
+		providerName,
+	})
+
+	const [session] = await db
+		.insert(sessions)
+		.values({
+			expirationDate: getSessionExpirationDate().toISOString(),
+			userId: user.id,
+		})
+		.returning({
+			id: sessions.id,
+			expirationDate: sessions.expirationDate,
+		})
 
 	return session
 }
@@ -201,7 +267,8 @@ export async function logout(
 	if (sessionId) {
 		// the .catch is important because that's what triggers the query.
 		// learn more about PrismaPromise: https://www.prisma.io/docs/orm/reference/prisma-client-reference#prismapromise-behavior
-		void prisma.session.deleteMany({ where: { id: sessionId } }).catch(() => {})
+		// void prisma.session.deleteMany({ where: { id: sessionId } }).catch(() => {})
+		await db.delete(sessions).where(eq(sessions.id, sessionId))
 	}
 	throw redirect(safeRedirect(redirectTo), {
 		...responseInit,
@@ -221,9 +288,14 @@ export async function verifyUserPassword(
 	where: Pick<User, 'username'> | Pick<User, 'id'>,
 	password: Password['hash'],
 ) {
-	const userWithPassword = await prisma.user.findUnique({
-		where,
-		select: { id: true, password: { select: { hash: true } } },
+	const userWithPassword = await db.query.users.findFirst({
+		where:
+			'id' in where
+				? eq(users.id, where.id)
+				: eq(users.username, where.username),
+		with: {
+			password: true,
+		},
 	})
 
 	if (!userWithPassword || !userWithPassword.password) {

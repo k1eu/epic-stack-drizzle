@@ -8,6 +8,7 @@ import {
 	type MetaFunction,
 } from '@remix-run/node'
 import { Form, useActionData, useSearchParams } from '@remix-run/react'
+import { eq } from 'drizzle-orm'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
@@ -17,11 +18,12 @@ import {
 	ProviderConnectionForm,
 	providerNames,
 } from '#app/utils/connections.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { sendEmail } from '#app/utils/email.server.ts'
 import { checkHoneypot } from '#app/utils/honeypot.server.ts'
 import { useIsPending } from '#app/utils/misc.tsx'
 import { EmailSchema } from '#app/utils/user-validation.ts'
+import { users } from '#drizzle/schema.ts'
 import { prepareVerification } from './verify.server.ts'
 
 const SignupSchema = z.object({
@@ -35,9 +37,11 @@ export async function action({ request }: ActionFunctionArgs) {
 
 	const submission = await parseWithZod(formData, {
 		schema: SignupSchema.superRefine(async (data, ctx) => {
-			const existingUser = await prisma.user.findUnique({
-				where: { email: data.email },
-				select: { id: true },
+			const existingUser = await db.query.users.findFirst({
+				where: eq(users.email, data.email),
+				columns: {
+					id: true,
+				},
 			})
 			if (existingUser) {
 				ctx.addIssue({
@@ -63,6 +67,8 @@ export async function action({ request }: ActionFunctionArgs) {
 		type: 'onboarding',
 		target: email,
 	})
+
+	console.log({otp})
 
 	const response = await sendEmail({
 		to: email,

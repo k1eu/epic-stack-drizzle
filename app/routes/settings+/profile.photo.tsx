@@ -1,3 +1,4 @@
+import { Blob } from 'buffer'
 import { getFormProps, getInputProps, useForm } from '@conform-to/react'
 import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { invariantResponse } from '@epic-web/invariant'
@@ -16,6 +17,7 @@ import {
 	useLoaderData,
 	useNavigation,
 } from '@remix-run/react'
+import { eq } from 'drizzle-orm'
 import { useState } from 'react'
 import { z } from 'zod'
 import { ErrorList } from '#app/components/forms.tsx'
@@ -23,12 +25,13 @@ import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { requireUserId } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import {
 	getUserImgSrc,
 	useDoubleCheck,
 	useIsPending,
 } from '#app/utils/misc.tsx'
+import { userImages, users } from '#drizzle/schema.js'
 import { type BreadcrumbHandle } from './profile.tsx'
 
 export const handle: BreadcrumbHandle & SEOHandle = {
@@ -57,13 +60,19 @@ const PhotoFormSchema = z.discriminatedUnion('intent', [
 
 export async function loader({ request }: LoaderFunctionArgs) {
 	const userId = await requireUserId(request)
-	const user = await prisma.user.findUnique({
-		where: { id: userId },
-		select: {
+	const user = await db.query.users.findFirst({
+		where: eq(users.id, userId),
+		columns: {
 			id: true,
 			name: true,
 			username: true,
-			image: { select: { id: true } },
+		},
+		with: {
+			image: {
+				columns: {
+					id: true,
+				},
+			},
 		},
 	})
 	invariantResponse(user, 'User not found', { status: 404 })
@@ -102,17 +111,20 @@ export async function action({ request }: ActionFunctionArgs) {
 	const { image, intent } = submission.value
 
 	if (intent === 'delete') {
-		await prisma.userImage.deleteMany({ where: { userId } })
+		await db.delete(userImages).where(eq(userImages.userId, userId))
 		return redirect('/settings/profile')
 	}
 
-	await prisma.$transaction(async $prisma => {
-		await $prisma.userImage.deleteMany({ where: { userId } })
-		await $prisma.user.update({
-			where: { id: userId },
-			data: { image: { create: image } },
+	//TODO: upload image
+	if (image) {
+		await db.transaction(async db => {
+			db.delete(userImages).where(eq(userImages.userId, userId))
+			// db.insert(userImages).values({
+			// 	userId,
+			// 	contentType: image.contentType,
+			// })
 		})
-	})
+	}
 
 	return redirect('/settings/profile')
 }

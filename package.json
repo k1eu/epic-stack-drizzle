@@ -30,7 +30,9 @@
     "test:e2e:run": "cross-env CI=true playwright test",
     "test:e2e:install": "npx playwright install --with-deps chromium",
     "typecheck": "tsc",
-    "validate": "run-p \"test -- --run\" lint typecheck test:e2e:run"
+    "validate": "run-p \"test -- --run\" lint typecheck test:e2e:run",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:push": "drizzle-kit push:pg"
   },
   "eslintIgnore": [
     "/node_modules",
@@ -76,6 +78,7 @@
     "crypto-js": "^4.2.0",
     "date-fns": "^3.6.0",
     "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.30.6",
     "eslint-plugin-remix-react-routes": "^1.0.5",
     "execa": "^8.0.1",
     "express": "^4.18.3",
@@ -88,6 +91,7 @@
     "litefs-js": "^1.1.2",
     "lru-cache": "^10.2.0",
     "morgan": "^1.10.0",
+    "postgres": "^3.4.4",
     "prisma": "^5.11.0",
     "qrcode": "^1.5.3",
     "react": "^18.2.0",
@@ -137,6 +141,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "@vitest/coverage-v8": "^1.4.0",
     "autoprefixer": "^10.4.18",
+    "drizzle-kit": "^0.20.14",
     "enforce-unique": "^1.3.0",
     "esbuild": "^0.20.2",
     "eslint": "^8.57.0",

@@ -37,7 +37,7 @@ export const handle: SEOHandle = {
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-	await requireUserWithRole(request, 'admin')
+	await requireUserWithRole(request, 'user')
 	const searchParams = new URL(request.url).searchParams
 	const query = searchParams.get('query')
 	if (query === '') {

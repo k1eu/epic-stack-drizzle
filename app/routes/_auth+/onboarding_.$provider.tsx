@@ -19,6 +19,7 @@ import {
 	useLoaderData,
 	useSearchParams,
 } from '@remix-run/react'
+import { eq } from 'drizzle-orm'
 import { safeRedirect } from 'remix-utils/safe-redirect'
 import { z } from 'zod'
 import { CheckboxField, ErrorList, Field } from '#app/components/forms.tsx'
@@ -31,12 +32,13 @@ import {
 	requireAnonymous,
 } from '#app/utils/auth.server.ts'
 import { ProviderNameSchema } from '#app/utils/connections.tsx'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { useIsPending } from '#app/utils/misc.tsx'
 import { authSessionStorage } from '#app/utils/session.server.ts'
 import { redirectWithToast } from '#app/utils/toast.server.ts'
 import { NameSchema, UsernameSchema } from '#app/utils/user-validation.ts'
 import { verifySessionStorage } from '#app/utils/verification.server.ts'
+import { users } from '#drizzle/schema.js'
 import { onboardingEmailSessionKey } from './onboarding'
 
 export const providerIdKey = 'providerId'
@@ -117,9 +119,11 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
 	const submission = await parseWithZod(formData, {
 		schema: SignupFormSchema.superRefine(async (data, ctx) => {
-			const existingUser = await prisma.user.findUnique({
-				where: { username: data.username },
-				select: { id: true },
+			const existingUser = await db.query.users.findFirst({
+				where: eq(users.username, data.username),
+				columns: {
+					id: true,
+				},
 			})
 			if (existingUser) {
 				ctx.addIssue({
@@ -158,7 +162,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
 	headers.append(
 		'set-cookie',
 		await authSessionStorage.commitSession(authSession, {
-			expires: remember ? session.expirationDate : undefined,
+			expires: remember ? new Date(session.expirationDate) : undefined,
 		}),
 	)
 	headers.append(

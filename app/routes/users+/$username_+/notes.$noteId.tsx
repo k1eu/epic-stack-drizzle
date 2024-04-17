@@ -14,6 +14,7 @@ import {
 	type MetaFunction,
 } from '@remix-run/react'
 import { formatDistanceToNow } from 'date-fns'
+import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
 import { floatingToolbarClassName } from '#app/components/floating-toolbar.tsx'
@@ -22,24 +23,32 @@ import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { requireUserId } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { getNoteImgSrc, useIsPending } from '#app/utils/misc.tsx'
 import { requireUserWithPermission } from '#app/utils/permissions.server.ts'
 import { redirectWithToast } from '#app/utils/toast.server.ts'
 import { userHasPermission, useOptionalUser } from '#app/utils/user.ts'
+import { notes } from '#drizzle/schema.js'
 import { type loader as notesLoader } from './notes.tsx'
 
 export async function loader({ params }: LoaderFunctionArgs) {
-	const note = await prisma.note.findUnique({
-		where: { id: params.noteId },
-		select: {
+	if (!params.noteId) {
+		return invariantResponse(true, 'Note not found', { status: 404 })
+	}
+
+	const note = await db.query.notes.findFirst({
+		where: eq(notes.id, params.noteId),
+		columns: {
 			id: true,
 			title: true,
 			content: true,
 			ownerId: true,
 			updatedAt: true,
+			createdAt: true,
+		},
+		with: {
 			images: {
-				select: {
+				columns: {
 					id: true,
 					altText: true,
 				},
@@ -49,7 +58,7 @@ export async function loader({ params }: LoaderFunctionArgs) {
 
 	invariantResponse(note, 'Not found', { status: 404 })
 
-	const date = new Date(note.updatedAt)
+	const date = new Date(note.updatedAt || note.createdAt)
 	const timeAgo = formatDistanceToNow(date)
 
 	return json({
@@ -78,9 +87,19 @@ export async function action({ request }: ActionFunctionArgs) {
 
 	const { noteId } = submission.value
 
-	const note = await prisma.note.findFirst({
-		select: { id: true, ownerId: true, owner: { select: { username: true } } },
-		where: { id: noteId },
+	const note = await db.query.notes.findFirst({
+		where: eq(notes.id, noteId),
+		columns: {
+			id: true,
+			ownerId: true,
+		},
+		with: {
+			owner: {
+				columns: {
+					username: true,
+				},
+			},
+		},
 	})
 	invariantResponse(note, 'Not found', { status: 404 })
 
@@ -90,7 +109,7 @@ export async function action({ request }: ActionFunctionArgs) {
 		isOwner ? `delete:note:own` : `delete:note:any`,
 	)
 
-	await prisma.note.delete({ where: { id: note.id } })
+	await db.delete(notes).where(eq(notes.id, note.id))
 
 	return redirectWithToast(`/users/${note.owner.username}/notes`, {
 		type: 'success',

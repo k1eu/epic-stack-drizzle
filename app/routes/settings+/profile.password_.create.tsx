@@ -8,14 +8,16 @@ import {
 	type ActionFunctionArgs,
 } from '@remix-run/node'
 import { Form, Link, useActionData } from '@remix-run/react'
+import { eq } from 'drizzle-orm'
 import { ErrorList, Field } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { getPasswordHash, requireUserId } from '#app/utils/auth.server.ts'
-import { prisma } from '#app/utils/db.server.ts'
+import { db } from '#app/utils/db.server.ts'
 import { useIsPending } from '#app/utils/misc.tsx'
 import { PasswordAndConfirmPasswordSchema } from '#app/utils/user-validation.ts'
+import { passwords } from '#drizzle/schema.js'
 import { type BreadcrumbHandle } from './profile.tsx'
 
 export const handle: BreadcrumbHandle & SEOHandle = {
@@ -26,9 +28,11 @@ export const handle: BreadcrumbHandle & SEOHandle = {
 const CreatePasswordForm = PasswordAndConfirmPasswordSchema
 
 async function requireNoPassword(userId: string) {
-	const password = await prisma.password.findUnique({
-		select: { userId: true },
-		where: { userId },
+	const password = await db.query.passwords.findFirst({
+		where: eq(passwords.userId, userId),
+		columns: {
+			userId: true,
+		},
 	})
 	if (password) {
 		throw redirect('/settings/profile/password')
@@ -62,17 +66,12 @@ export async function action({ request }: ActionFunctionArgs) {
 
 	const { password } = submission.value
 
-	await prisma.user.update({
-		select: { username: true },
-		where: { id: userId },
-		data: {
-			password: {
-				create: {
-					hash: await getPasswordHash(password),
-				},
-			},
-		},
-	})
+	await db
+		.update(passwords)
+		.set({
+			hash: await getPasswordHash(password),
+		})
+		.where(eq(passwords.userId, userId))
 
 	return redirect(`/settings/profile`, { status: 302 })
 }
